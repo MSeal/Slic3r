@@ -141,11 +141,16 @@ AvrDude::Ptr AvrDude::run()
 
 	if (self->p) {
 		auto avrdude_thread = std::thread([self]() {
+			bool cancel = false;
+			int res = -1;
+
 			if (self->p->run_fn) {
-				self->p->run_fn();
+				self->p->run_fn(cancel);
 			}
 
-			auto res = self->p->run();
+			if (! cancel) {
+				res = self->p->run();
+			}
 
 			if (self->p->complete_fn) {
 				self->p->complete_fn(res, self->p->current_args_set);

@@ -1,8 +1,10 @@
 #include "FirmwareDialog.hpp"
 
+#include <iostream>   // XXX
 #include <numeric>
 #include <algorithm>
 #include <boost/format.hpp>
+#include <boost/asio.hpp>
 #include <boost/filesystem/path.hpp>
 #include <boost/filesystem/fstream.hpp>
 #include <boost/log/trivial.hpp>
@@ -28,6 +30,8 @@
 #include "../Utils/Serial.hpp"
 
 namespace fs = boost::filesystem;
+namespace asio = boost::asio;
+using boost::system::error_code;
 
 
 namespace Slic3r {
@@ -47,6 +51,55 @@ wxDEFINE_EVENT(EVT_AVRDUDE, wxCommandEvent);
 
 
 // Private
+
+struct HexMeta
+{
+	static const char *hex_terminator;
+
+	// Byte-offset of the second 'section' - the l10n data to be flashed into MK3 xflash
+	// Zero if there is no second 'section'
+	size_t lang_offset;    // FIXME: use num_secions
+
+	// Holds the complete printer model/variant string to be compared with what the printer reports
+	// Example: 1_75mm_MK3-EINSy10a-E3Dv6full
+	std::string printer_model;
+
+	HexMeta(fs::path path) : lang_offset(0)
+	{
+		fs::ifstream file(path);
+		if (! file.good()) {
+			return;
+		}
+
+		size_t offset = 0;
+		std::string line;
+		while (getline(file, line, '\n').good()) {
+			// Account for LF vs CRLF
+			if (!line.empty() && line.back() != '\r') {
+				line.push_back('\r');
+			}
+
+			if (line == hex_terminator) {
+				if (offset == 0) {
+					// This is the first terminator seen, save the position
+					offset = file.tellg();
+				} else {
+					// We've found another terminator, use the offset just after the first one
+					// which is the start of the second 'section'.
+					this->lang_offset = offset;
+				}
+			}
+		}
+
+		if (!line.empty() && line[0] != ':') {
+			// The printer model string is on the last line, if any
+			line.pop_back();   // Remove the '\r' we added earlier
+			this->printer_model = std::move(line);
+		}
+	}
+};
+
+const char *HexMeta::hex_terminator = ":00000001FF\r";
 
 struct FirmwareDialog::priv
 {
@@ -80,6 +133,7 @@ struct FirmwareDialog::priv
 	AvrDude::Ptr avrdude;
 	std::string avrdude_config;
 	unsigned progress_tasks_done;
+	unsigned progress_tasks_bar;
 	bool cancelled;
 
 	priv(FirmwareDialog *q) :
@@ -89,6 +143,7 @@ struct FirmwareDialog::priv
 		timer_pulse(q),
 		avrdude_config((fs::path(::Slic3r::resources_dir()) / "avrdude" / "avrdude.conf").string()),
 		progress_tasks_done(0),
+		progress_tasks_bar(0),
 		cancelled(false)
 	{}
 
@@ -96,6 +151,7 @@ struct FirmwareDialog::priv
 	void flashing_start(bool flashing_l10n);
 	void flashing_done(AvrDudeComplete complete);
 	size_t hex_num_sections(const wxString &path);
+	bool check_printer_model(const HexMeta &metadata, std::string port);
 	void perform_upload();
 	void cancel();
 	void on_avrdude(const wxCommandEvent &evt);
@@ -132,9 +188,10 @@ void FirmwareDialog::priv::flashing_start(bool flashing_l10n)
 	hex_picker->Disable();
 	btn_close->Disable();
 	btn_flash->SetLabel(btn_flash_label_flashing);
-	progressbar->SetRange(flashing_l10n ? 500 : 200);   // See progress callback below
+	progressbar->SetRange(flashing_l10n ? 400 : 200);   // See progress callback below
 	progressbar->SetValue(0);
 	progress_tasks_done = 0;
+	progress_tasks_bar = 0;
 	cancelled = false;
 	timer_pulse.Start(50);
 }
@@ -158,7 +215,7 @@ void FirmwareDialog::priv::flashing_done(AvrDudeComplete complete)
 	}
 }
 
-size_t FirmwareDialog::priv::hex_num_sections(const wxString &path)
+size_t FirmwareDialog::priv::hex_num_sections(const wxString &path)   // XXX: remove in favor of HexMeta
 {
 	fs::ifstream file(fs::path(path.wx_str()));
 	if (! file.good()) {
@@ -182,6 +239,40 @@ size_t FirmwareDialog::priv::hex_num_sections(const wxString &path)
 	return res;
 }
 
+bool FirmwareDialog::priv::check_printer_model(const HexMeta &metadata, std::string port)
+{
+	if (metadata.printer_model.empty()) {
+		return false;
+	}
+
+	asio::io_service io;
+	Utils::Serial serial(io, port, 115200);
+
+	enum {
+		TIMEOUT = 1000,
+		RETREIES = 3,
+	};
+
+	if (! serial.printer_ready_wait(RETREIES, TIMEOUT)) {
+		return false;
+	}
+
+	std::string line;
+	error_code ec;
+	for (unsigned retries = RETREIES; retries > 0; retries--) {
+		serial.printer_write_line("PRUSA Rev");
+
+		while (serial.read_line(TIMEOUT, line, ec)) {
+			if (line == metadata.printer_model) {
+				return true;
+			}
+			line.clear();
+		}
+	}
+
+	return false;
+}
+
 void FirmwareDialog::priv::perform_upload()
 {
 	auto filename = hex_picker->GetPath();
@@ -192,11 +283,14 @@ void FirmwareDialog::priv::perform_upload()
 		if (this->ports[selection].friendly_name == port)
 			port = this->ports[selection].port;
 	}
-	if (filename.IsEmpty() || port.empty()) { return; }
+	// if (filename.IsEmpty() || port.empty()) { return; }     // XXX
 
 	const bool extra_verbose = false;   // For debugging
 	const auto num_secions = hex_num_sections(filename);
+	HexMeta metadata(filename.wx_str());
 	const auto filename_utf8 = filename.utf8_str();
+
+	metadata.printer_model = "1_75mm_MK3-EINSy_10a-E3Dv6full";   // XXX
 
 	flashing_start(num_secions > 1);
 
@@ -227,7 +321,7 @@ void FirmwareDialog::priv::perform_upload()
 			return a + ' ' + b;
 		});
 
-	avrdude.push_args(std::move(args));
+	// avrdude.push_args(std::move(args));   // XXX
 	
 	if (num_secions > 1) {
 		// The hex file also contains another section with l10n data to be flashed into the external flash on MK3 (Einsy)
@@ -250,10 +344,19 @@ void FirmwareDialog::priv::perform_upload()
 				return a + ' ' + b;
 			});
 
-		avrdude.push_args(std::move(args_l10n));
+		// avrdude.push_args(std::move(args_l10n));
 	}
-	
+
 	this->avrdude = avrdude
+		.on_run([this, metadata, port](bool &cancel) {
+			// TODO
+
+			const auto model_matches = this->check_printer_model(metadata, std::move(port));
+			std::cerr << "check_printer_model: " << model_matches << std::endl;
+
+			this->cancelled = true;
+			cancel = true;
+		})
 		.on_message(std::move([q, extra_verbose](const char *msg, unsigned /* size */) {
 			if (extra_verbose) {
 				BOOST_LOG_TRIVIAL(debug) << "avrdude: " << msg;
@@ -306,12 +409,15 @@ void FirmwareDialog::priv::on_avrdude(const wxCommandEvent &evt)
 		// and then display overall progress during the latter tasks.
 
 		if (progress_tasks_done > 0) {
-			progressbar->SetValue(progress_tasks_done - 100 + evt.GetInt());
+			progressbar->SetValue(progress_tasks_bar + evt.GetInt());
 		}
 
 		if (evt.GetInt() == 100) {
 			timer_pulse.Stop();
-			progress_tasks_done += 100;
+			if (progress_tasks_done % 3 != 0) {
+				progress_tasks_bar += 100;
+			}
+			progress_tasks_done++;
 		}
 
 		break;
