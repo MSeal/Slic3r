@@ -12,12 +12,15 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/filesystem.hpp>
 #include <boost/format.hpp>
+#include <boost/optional.hpp>
 
 #if _WIN32
 	#include <Windows.h>
 	#include <Setupapi.h>
 	#include <initguid.h>
 	#include <devguid.h>
+	// #include <cstdio>
+	#include <regex>
 	// Undefine min/max macros incompatible with the standard library
 	// For example, std::numeric_limits<std::streamsize>::max()
 	// produces some weird errors
@@ -52,25 +55,68 @@
 	#include <asm-generic/ioctls.h>
 #endif
 
+using boost::optional;
+
 
 namespace Slic3r {
 namespace Utils {
 
-static bool looks_like_printer(const std::string &friendly_name)   // XXX: used?
+
+static bool looks_like_printer(const std::string &friendly_name)
 {
 	return friendly_name.find("Original Prusa") != std::string::npos;
 }
 
-#ifdef __linux__
-static std::string get_tty_friendly_name(const std::string &path, const std::string &name)
+#if _WIN32
+void parse_hardware_id(const std::string &hardware_id, SerialPortInfo &spi)
 {
-	const auto sysfs_product = (boost::format("/sys/class/tty/%1%/device/../product") % name).str();
-	std::ifstream file(sysfs_product);
-	std::string product;
-
-	std::getline(file, product);
-	return file.good() ? (boost::format("%1% (%2%)") % product % path).str() : path;
+	unsigned vid, pid;
+	std::regex pattern("USB\\\\.*VID_([[:xdigit:]]+)&PID_([[:xdigit:]]+).*");
+	std::smatch matches;
+	if (std::regex_match(hardware_id, matches, pattern)) {
+		try {
+			vid = std::stoul(matches[1].str(), 0, 16);
+			pid = std::stoul(matches[2].str(), 0, 16);
+			spi.id_vendor = vid;
+			spi.id_product = pid;
+		}
+		catch (...) {}
+	}
 }
+#endif
+
+#ifdef __linux__
+optional<std::string> sysfs_tty_prop(const std::string &tty_dev, const std::string &name)
+{
+	const auto prop_path = (boost::format("/sys/class/tty/%1%/device/../%2%") % tty_dev % name).str();
+	std::ifstream file(prop_path);
+	std::string res;
+
+	std::getline(file, res);
+	if (file.good()) { return res; }
+	else { return boost::none; }
+}
+
+optional<unsigned long> sysfs_tty_prop_hex(const std::string &tty_dev, const std::string &name)
+{
+	auto prop = sysfs_tty_prop(tty_dev, name);
+	if (!prop) { return boost::none; }
+
+	try { return std::stoul(*prop, 0, 16); }
+	catch (...) { return boost::none; }
+}
+
+// static std::string get_tty_friendly_name(const std::string &path, const std::string &name)   // XXX: remove
+// {
+// 	// const auto sysfs_product = (boost::format("/sys/class/tty/%1%/device/../product") % name).str();
+// 	// std::ifstream file(sysfs_product);
+// 	// std::string product;
+
+// 	// std::getline(file, product);
+// 	// return file.good() ? (boost::format("%1% (%2%)") % product % path).str() : path;
+// 	auto prop = sysfs_tty_prop(name, "product");
+// 	return prop ? (boost::format("%1% (%2%)") % *prop % path).str() : path;
+// }
 #endif
 
 std::vector<SerialPortInfo> scan_serial_ports_extended()
@@ -99,6 +145,7 @@ std::vector<SerialPortInfo> scan_serial_ports_extended()
 				if (port_info.port.empty())
 					continue;
 			}
+
 			// Find the size required to hold the device info.
 			DWORD regDataType;
 			DWORD reqSize = 0;
@@ -107,7 +154,8 @@ std::vector<SerialPortInfo> scan_serial_ports_extended()
 			// Now store it in a buffer.
 			if (! SetupDiGetDeviceRegistryProperty(hDeviceInfo, &devInfoData, SPDRP_HARDWAREID, &regDataType, (BYTE*)hardware_id.data(), reqSize, nullptr))
 				continue;
-			port_info.hardware_id = boost::nowide::narrow(hardware_id.data());
+			parse_hardware_id(boost::nowide::narrow(hardware_id.data()), port_info);
+
 			// Find the size required to hold the friendly name.
 			reqSize = 0;
 			SetupDiGetDeviceRegistryProperty(hDeviceInfo, &devInfoData, SPDRP_FRIENDLYNAME, nullptr, nullptr, 0, &reqSize);
@@ -158,6 +206,7 @@ std::vector<SerialPortInfo> scan_serial_ports_extended()
 							}
 							CFRelease(cf_property);
 						}
+						// TODO: get vid/pid
 						if (port_info.friendly_name.empty())
 							port_info.friendly_name = port_info.port;
 						output.emplace_back(std::move(port_info));
@@ -177,9 +226,16 @@ std::vector<SerialPortInfo> scan_serial_ports_extended()
                 const auto path = dir_entry.path().string();
                 SerialPortInfo spi;
                 spi.port = path;
-                spi.hardware_id = path;
+                // spi.hardware_id = path;  // XXX
 #ifdef __linux__
-                spi.friendly_name = get_tty_friendly_name(path, name);
+				auto friendly_name = sysfs_tty_prop(name, "product");
+				spi.friendly_name = friendly_name ? (boost::format("%1% (%2%)") % *friendly_name % path).str() : path;
+				auto vid = sysfs_tty_prop_hex(name, "idVendor");
+				auto pid = sysfs_tty_prop_hex(name, "idProduct");
+				if (vid && pid) {
+					spi.id_vendor = *vid;
+					spi.id_product = *pid;
+				}
 #else
                 spi.friendly_name = path;
 #endif

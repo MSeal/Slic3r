@@ -161,7 +161,7 @@ struct FirmwareDialog::priv
 	void prepare_common(AvrDude &, const std::string &port);
 	void prepare_mk2(AvrDude &, const std::string &port);
 	void prepare_mk3(AvrDude &, const std::string &port);
-	void prepare_mk3_mmu(AvrDude &, const std::string &port);
+	void prepare_mm_control(AvrDude &, const std::string &port);
 	void perform_upload();
 
 	void cancel();
@@ -345,7 +345,7 @@ void FirmwareDialog::priv::prepare_mk3(AvrDude &avrdude, const std::string &port
 	avrdude.push_args(std::move(args_l10n));
 }
 
-void FirmwareDialog::priv::prepare_mk3_mmu(AvrDude &avrdude, const std::string &port)
+void FirmwareDialog::priv::prepare_mm_control(AvrDude &avrdude, const std::string &port)
 {
 	// TODO
 }
@@ -360,6 +360,11 @@ void FirmwareDialog::priv::perform_upload()
 		// Verify whether the combo box list selection equals to the combo box edit value.
 		if (this->ports[selection].friendly_name == port)
 			port = this->ports[selection].port;
+
+		const auto &spi = this->ports[selection];
+		std::cerr << "Port: " << spi.port << ", (" << spi.id_vendor << ", " << spi.id_product << ')'
+			<< ", " << spi.friendly_name << ", " << spi.is_printer
+			<< std::endl;
 	}
 	// if (filename.IsEmpty() || port.empty()) { return; }     // XXX
 
@@ -382,8 +387,8 @@ void FirmwareDialog::priv::perform_upload()
 			prepare_mk3(avrdude, port);
 		break;
 
-		case HexFile::DEV_MK3_MMU:
-			prepare_mk3_mmu(avrdude, port);
+		case HexFile::DEV_MK3_MM_CONTROL:
+			prepare_mm_control(avrdude, port);
 		break;
 	}
 
@@ -444,8 +449,8 @@ void FirmwareDialog::priv::perform_upload()
 			// const auto model_matches = this->check_model_id(metadata, std::move(port));
 			// std::cerr << "check_model_id: " << model_matches << std::endl;
 
-			// this->cancelled = true;
-			// cancel = true;
+			this->cancelled = true;
+			cancel = true;
 		})
 		.on_message(std::move([q, extra_verbose](const char *msg, unsigned /* size */) {
 			if (extra_verbose) {

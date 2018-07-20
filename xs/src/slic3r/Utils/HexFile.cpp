@@ -18,7 +18,7 @@ static HexFile::DeviceKind parse_device_kind(const std::string &str)
 {
 	     if (str == "mk2") { return HexFile::DEV_MK2; }
 	else if (str == "mk3") { return HexFile::DEV_MK3; }
-	else if (str == "mk3_mmu") { return HexFile::DEV_MK3_MMU; }
+	else if (str == "mm-control") { return HexFile::DEV_MM_CONTROL; }
 	else { return HexFile::DEV_GENERIC; }
 }
 

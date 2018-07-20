@@ -15,7 +15,7 @@ struct HexFile
 		DEV_GENERIC,
 		DEV_MK2,
 		DEV_MK3,
-		DEV_MK3_MMU,
+		DEV_MM_CONTROL,
 	};
 
 	boost::filesystem::path path;
