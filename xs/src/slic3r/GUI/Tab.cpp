@@ -627,10 +627,10 @@ void TabPrint::update()
 	auto first_layer_height = m_config->option<ConfigOptionFloatOrPercent>("first_layer_height")->value;
 	auto layer_height = m_config->opt_float("layer_height");
 	if (m_config->opt_bool("wipe_tower") &&
-		(first_layer_height != 0.2 || layer_height < 0.15 || layer_height > 0.35)) {
+		(first_layer_height != 0.2 || layer_height < 0.07 || layer_height > 0.35)) {
 		wxString msg_text = _(L("The Wipe Tower currently supports only:\n"
 			"- first layer height 0.2mm\n"
-			"- layer height from 0.15mm to 0.35mm\n"
+			"- layer height from 0.07mm to 0.35mm\n"
 			"\nShall I adjust those settings in order to enable the Wipe Tower?"));
 		auto dialog = new wxMessageDialog(parent(), msg_text, _(L("Wipe Tower")), wxICON_WARNING | wxYES | wxNO);
 		DynamicPrintConfig new_conf = *m_config;
@@ -639,7 +639,7 @@ void TabPrint::update()
 			auto percent = val.percent;
 			new_conf.set_key_value("first_layer_height", new ConfigOptionFloatOrPercent(0.2, percent));
 
-			if (m_config->opt_float("layer_height") < 0.15) new_conf.set_key_value("layer_height", new ConfigOptionFloat(0.15));
+			if (m_config->opt_float("layer_height") < 0.07) new_conf.set_key_value("layer_height", new ConfigOptionFloat(0.07));
 			if (m_config->opt_float("layer_height") > 0.35) new_conf.set_key_value("layer_height", new ConfigOptionFloat(0.35));
 		}
 		else
